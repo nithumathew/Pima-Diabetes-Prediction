@@ -1,0 +1,243 @@
+---
+title: "Machine Learning Final Project"
+author: "Nithu Mathew"
+date: "10/7/2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, error=FALSE}
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(ggfortify)
+library(fastICA)
+library(ggcorrplot)
+library(DMwR)
+library(ROCR)
+library(caret)
+library(randomForest)
+library(glmnet)
+library(pROC)
+library(MASS)
+
+```
+
+###Data Cleaning and Pre-Processing
+
+The original dataset used binary numbers to indicate whether or not the subject had diabetes. I changed the factor level labels to "positive" and "negative" to make it easier to identify. 
+  
+```{r, message=FALSE}
+diabetes <- read_csv("diabetes.csv")
+diabetes$Outcome <- ifelse(diabetes$Outcome == 0, "neg", "pos")
+
+```
+
+As there were a lot of 0 values in the variables, I changed them to NA and imputed the NA values using KNN.
+
+```{r}
+diabetes[, 2:8][diabetes[, 2:8] == 0] <- NA
+diabetes <-as.data.frame(diabetes)
+diabetes[,1:8] <- round(knnImputation(diabetes[1:8]), 1)
+```
+
+The following table provides a summary of the dataset, including mean, median, maximum, minimum, etc. 
+  
+```{r}
+summary(diabetes)
+```
+
+####Variable Distribution 
+```{r}
+preg_dens <- ggplot(data = diabetes) + geom_density(aes(x = Pregnancies, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+glucose_dens <- ggplot(data = diabetes)+geom_density(aes(x = Glucose, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+bloodp_dens <- ggplot(data = diabetes)+geom_density(aes(x = BloodPressure, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+skin_dens <- ggplot(data = diabetes)+geom_density(aes(x = SkinThickness, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+insulin_dens <- ggplot(data = diabetes)+geom_density(aes(x = Insulin, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+dpf_dens <- ggplot(data = diabetes)+geom_density(aes(x = DiabetesPedigreeFunction, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+bmi_dens <- ggplot(data = diabetes)+geom_density(aes(x = BMI, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+age_dens <- ggplot(data = diabetes)+geom_density(aes(x = Age, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "none")
+outcome <- ggplot(data = diabetes) +geom_bar(aes(x = Outcome, color = Outcome, fill = Outcome), alpha = 0.4) + theme(legend.position = "right")
+
+grid.arrange(preg_dens, glucose_dens, bloodp_dens, skin_dens, insulin_dens, bmi_dens, dpf_dens, age_dens, outcome, nrow = 3, ncol = 3)
+```
+
+####Correlation Plot
+```{r}
+corr <- round(cor(diabetes[1:8]),1)
+ggcorrplot(corr, lab = TRUE, lab_size = 3, lab_col = "darkgray", colors = c("#6D9EC1", "white", "#E46726"))
+```
+
+###Feature Selection
+
+####Random Forests
+```{r}
+diabetes$Outcome <- factor(diabetes$Outcome)
+
+
+train_size <- floor(0.75 * nrow(diabetes))
+set.seed(25)
+train_pos <- sample(seq_len(nrow(diabetes)), size = train_size)
+
+
+train_classification <- diabetes[train_pos, ]
+test_classification <- diabetes[-train_pos, ]
+
+#fit a model
+rfmodel = randomForest(Outcome ~ ., data=train_classification,  importance = TRUE, oob.times = 15, confusion = TRUE)
+
+#rank features based on importance 
+importance(rfmodel)
+```
+
+The valuable features are Glucose, Insulin, BMI, Age and Preganancies.
+
+####Recursive Feature Elimination
+
+```{r}
+#define the control 
+control = rfeControl(functions = caretFuncs, number = 2)
+
+# run the RFE algorithm
+results = rfe(diabetes[,1:8], diabetes[,9], sizes = c(2,3,5,6,8), rfeControl = control, method = "svmRadial")
+
+results
+results$variables
+
+#Visualize
+plot(results, type=c("g", "o"))
+
+#list chosen feature
+predictors(results)
+```
+
+The top 5 variables:
+   Glucose, Insulin, Age, BMI, SkinThickness
+   
+   
+   
+###Training the Model
+
+####Logistic regression
+
+```{r}
+set.seed(824)
+ctrl <- trainControl(method = "repeatedcv", repeats = 10, number = 3,classProbs = T,
+                     savePredictions = T)
+
+#create model. logistic regression is a bionomial general linear model. 
+
+logistic_regression <- train(Outcome~ ., data = train_classification, method = "glm", family= "binomial", trControl = ctrl)
+
+logistic_regression
+```
+
+#####Visualize ROC curve 
+```{r}
+plot(x = roc(predictor = logistic_regression$pred$pos,
+             response = logistic_regression$pred$obs)$specificities, 
+     y = roc(predictor = logistic_regression$pred$pos, 
+             response = logistic_regression$pred$obs)$sensitivities,
+     col= "#6699CC", xlim = c(1, 0), type ="l", ylab = "Sensitivity",
+     xlab = "Specificity", main = "ROC for Logistic Regression")
+legend("bottomright", legend = paste("pos v neg --", 
+                                     roc(predictor = logistic_regression$pred$pos,
+                                         response = logistic_regression$pred$obs)$auc
+, sep = ""), col = c("#6699CC"), fill = c("#6699CC"))
+```
+
+#####Test on an independent set
+```{r}
+# predict outcome in test data
+logistic_regression_predict <- predict(logistic_regression, 
+                                             newdata = test_classification[,-9])
+
+#confusion matrix
+logistic_confusion <- confusionMatrix(logistic_regression_predict, 
+                reference = test_classification$Outcome)
+logistic_confusion$overall
+
+
+fourfoldplot(logistic_confusion$table, main = "Confusion Matrix for Logistic Regression")
+```
+
+####Random Forests
+
+```{r}
+set.seed(822)
+
+rf_train <- train(Outcome ~ ., data = train_classification, method = 'rf', tuneLength = 7, metric = 'Accuracy', trControl = ctrl)
+                   
+rf_train
+```
+
+#####Visualize ROC curve
+```{r}
+plot(x = roc(predictor = rf_train$pred$pos,
+             response = rf_train$pred$obs)$specificities, 
+     y = roc(predictor = rf_train$pred$pos, 
+             response = rf_train$pred$obs)$sensitivities,
+     col= "#e36049", xlim = c(1, 0), type ="l", ylab = "Sensitivity",
+     xlab = "Specificity", main = "ROC for Random Forests")
+legend("bottomright", legend = paste("pos v neg --", 
+                                     roc(predictor = rf_train$pred$pos,
+                                         response = rf_train$pred$obs)$auc
+, sep = ""), col = c("#e36049"), fill = c("#e36049"))
+```
+
+#####Test on independent set
+```{r}
+rf_predict <- predict(rf_train, test_classification[,-9])
+
+rf_confusion <- confusionMatrix(test_classification$Outcome, rf_predict)
+rf_confusion$overall
+
+fourfoldplot(rf_confusion$table, color = c("#e18648", "#e36049"), main = "Confusion Matrix for Random Forestsr4")
+```
+
+####Support Vector Machines
+
+```{r}
+set.seed(123)
+
+svm = train(Outcome ~ .,  data = train_classification, method = "svmLinear", 
+            tuneLength = 10, trControl = ctrl)
+
+svm
+```
+
+#####Visualize ROC curve
+
+```{r}
+plot(x = roc(predictor = svm$pred$pos,
+             response = svm$pred$obs)$specificities, 
+     y = roc(predictor = svm$pred$pos, 
+             response = svm$pred$obs)$sensitivities,
+     col= "#aaaaaa", xlim = c(1, 0), type ="l", ylab = "Sensitivity",
+     xlab = "Specificity", main = "ROC for Support Vector Machine")
+legend("bottomright", legend = paste("pos v neg --", 
+                                     roc(predictor = svm$pred$pos,
+                                         response = svm$pred$obs)$auc
+, sep = ""), col = c("#aaaaaa"), fill = c("#aaaaaa"))
+
+```
+
+#####Test on independent set 
+
+```{r}
+svm_test = predict(svm, newdata = test_classification)
+svm_confusion <- confusionMatrix(svm_test, reference = test_classification$Outcome)
+
+fourfoldplot(svm_confusion$table,color = c("#dddddd", "#aaaaaa"), main = "Confusion Matrix for Support Vector Machine")
+```
+
+
+
+   
