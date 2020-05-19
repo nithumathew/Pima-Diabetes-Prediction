@@ -9,5 +9,5 @@ Complete CSV file with all patient data
 ### final.Rmd
 R Markdown with all code used
 
-### ML_final_project.pdf
+### ML final project.pdf
 Final project presentation
